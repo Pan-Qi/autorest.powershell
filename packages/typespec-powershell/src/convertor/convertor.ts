@@ -128,6 +128,36 @@ function getUrlParameters(program: Program, psContext: SdkContext) {
 
 function getOperationGroups(program: Program, client: SdkClient, psContext: SdkContext, model: PwshModel, emitterOptions: PSOptions): OperationGroup[] {
   const operationGroupsMap = new Map<string, OperationGroup>();
+  if (emitterOptions["operation-id-mapping"] !== undefined) {
+    throw new Error("Place operation-id-mapping inside the directive array, not directly under the emitter options.");
+  }
+  const mapping = new Map<string, string>();
+  const directives = emitterOptions.directive ?? [];
+  if (!Array.isArray(directives)) {
+    throw new Error("directive must be an array.");
+  }
+  for (const directive of directives) {
+    if (!directive || !Object.prototype.hasOwnProperty.call(directive, "operation-id-mapping")) {
+      continue;
+    }
+    if (Object.keys(directive).length !== 1) {
+      throw new Error("An operation-id-mapping directive cannot also contain command or model directive fields.");
+    }
+    const entries = directive["operation-id-mapping"];
+    if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
+      throw new Error("operation-id-mapping must be an object mapping operation IDs to Group_Method strings.");
+    }
+    for (const [source, target] of Object.entries(entries)) {
+      if (!source.trim() || typeof target !== "string" || !/^[^_\s]+_[^_\s]+$/.test(target)) {
+        throw new Error(`Invalid operation-id-mapping entry '${source}': the target must be a non-empty Group_Method string.`);
+      }
+      if (mapping.has(source) && mapping.get(source) !== target) {
+        throw new Error(`Conflicting operation-id-mapping entries for '${source}'.`);
+      }
+      mapping.set(source, target);
+    }
+  }
+  const mappedIds = new Map<string, string>();
 
   const operations = listOperations(client);
   for (const operation of operations) {
@@ -136,14 +166,20 @@ function getOperationGroups(program: Program, client: SdkClient, psContext: SdkC
     if (op.overloads && op.overloads?.length > 0) {
       continue;
     }
-    const operationId = resolveOperationId(psContext, op);
+    const originalOperationId = resolveOperationId(psContext, op);
+    const operationId = mapping.get(originalOperationId) ?? originalOperationId;
+    const previousSource = mappedIds.get(operationId);
+    if (previousSource !== undefined && previousSource !== originalOperationId) {
+      throw new Error(`operation-id-mapping maps '${previousSource}' and '${originalOperationId}' to the same operation ID '${operationId}'.`);
+    }
+    mappedIds.set(operationId, originalOperationId);
     let group = operationGroupsMap.get(operationId.includes('_') ? operationId.split("_")[0] : "");
     if (!group) {
       group = new OperationGroup("");
       group.language.default.name = group.$key = operationId.includes('_') ? operationId.split("_")[0] : "";
       operationGroupsMap.set(operationId.includes('_') ? operationId.split("_")[0] : "", group);
     }
-    addOperation(psContext, op, group, model, emitterOptions);
+    addOperation(psContext, op, group, model, emitterOptions, operationId);
   }
   return Array.from(operationGroupsMap.values());
 }
@@ -207,8 +243,7 @@ function standardizeOperationId(name: string) {
     .join("_");
 }
 
-function addOperation(psContext: SdkContext, op: HttpOperation, operationGroup: OperationGroup, model: PwshModel, emitterOptions: PSOptions) {
-  const operationId = resolveOperationId(psContext, op);
+function addOperation(psContext: SdkContext, op: HttpOperation, operationGroup: OperationGroup, model: PwshModel, emitterOptions: PSOptions, operationId: string) {
   const newOperation = new Operation( operationId.split('_')[1] ?? pascalCase(op.operation.name), getDoc(psContext.program, op.operation) ?? "");
   newOperation.operationId = operationId;
   // Add Api versions
