@@ -1,0 +1,7 @@
+# Track the fixed regression baseline, but not dependencies or build outputs.
+!**
+generated/modules/
+bin/
+obj/
+.vs/
+test/*-TestResults.xml
